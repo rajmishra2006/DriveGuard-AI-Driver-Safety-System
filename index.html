@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DriveGuard | Driver Safety Monitoring</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .alert-pulse { animation: pulse 1s infinite; }
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7); }
+            70% { box-shadow: 0 0 0 20px rgba(239, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+        .night-mode { background-color: #0a0a0a; color: #e5e5e5; }
+        .night-mode .card { background-color: #1a1a1a; border-color: #333; }
+        .camera-container { position: relative; overflow: hidden; border-radius: 1rem; }
+        #webcam { transform: scaleX(-1); }
+        #output_canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; transform: scaleX(-1); }
+        .alert-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; border: 8px solid transparent; transition: all 0.3s;
+        }
+        .alert-active .alert-overlay { border-color: #ef4444; background: rgba(239, 68, 68, 0.1); }
+        .text-glow {
+            text-shadow: 0 0 20px rgba(79, 70, 229, 0.2);
+        }
+        .brand-badge {
+            background: linear-gradient(135deg, rgba(79, 70, 229, 0.1) 0%, rgba(147, 51, 234, 0.1) 100%);
+            padding: 0.5rem 1.25rem;
+            border-radius: 1rem;
+            border: 1px solid rgba(79, 70, 229, 0.1);
+            backdrop-filter: blur(4px);
+        }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen transition-colors duration-500">
+    <div id="app-container" class="max-w-7xl mx-auto px-4 py-8">
+        <!-- Header -->
+        <header class="flex justify-between items-center mb-8">
+            <div class="flex items-center gap-3">
+                <div class="bg-indigo-600 p-2 rounded-lg shadow-lg shadow-indigo-200">
+                    <i data-lucide="shield-check" class="text-white w-8 h-8"></i>
+                </div>
+                <div class="brand-badge group transition-all hover:scale-105 cursor-default">
+                    <h1 class="text-3xl font-extrabold tracking-tight text-slate-900 dark:text-white text-glow">
+                        <span class="bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-purple-600 group-hover:from-purple-600 group-hover:to-indigo-600 transition-all duration-500">Drive</span>Guard
+                    </h1>
+                    <p class="text-[9px] text-slate-500 font-bold uppercase tracking-[0.2em] mt-0.5 opacity-80">Advanced AI Monitoring</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-4">
+                <div id="system-status" class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-100 text-emerald-700 text-sm font-medium">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    System Active
+                </div>
+                <button id="theme-toggle" class="p-2 rounded-full hover:bg-slate-200 transition-colors">
+                    <i data-lucide="moon" class="w-6 h-6"></i>
+                </button>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+            <!-- Main Camera View -->
+            <div class="lg:col-span-2 space-y-6">
+                <div id="camera-card" class="card bg-white p-4 rounded-2xl shadow-sm border border-slate-200">
+                    <div class="flex justify-between items-center mb-4">
+                        <h2 class="font-semibold text-lg flex items-center gap-2">
+                            <i data-lucide="video" class="w-5 h-5 text-indigo-600"></i>
+                            Live Feed
+                        </h2>
+                        <div class="flex gap-2">
+                            <span id="debug-info" class="text-[10px] font-mono bg-slate-100 px-2 py-1 rounded hidden">MOR: 0 | DIST: 0</span>
+                            <span id="fps-counter" class="text-xs font-mono bg-slate-100 px-2 py-1 rounded">FPS: 0</span>
+                            <span id="mode-badge" class="text-xs font-medium bg-indigo-100 text-indigo-700 px-2 py-1 rounded">Normal Mode</span>
+                        </div>
+                    </div>
+                    
+                    <div class="camera-container bg-slate-900 aspect-video relative group">
+                        <video id="webcam" class="w-full h-full object-cover" autoplay playsinline></video>
+                        <canvas id="output_canvas"></canvas>
+                        <div class="alert-overlay"></div>
+                        
+                        <!-- Real-time Alert Banner -->
+                        <div id="alert-banner" class="absolute top-4 left-1/2 -translate-x-1/2 hidden z-10">
+                            <div class="bg-red-600 text-white px-6 py-3 rounded-full shadow-2xl flex items-center gap-3 alert-pulse">
+                                <i data-lucide="alert-triangle" class="w-6 h-6"></i>
+                                <span id="alert-message" class="font-bold text-lg uppercase tracking-wider">Alert! Drowsiness Detected</span>
+                            </div>
+                        </div>
+
+                        <!-- IR/Night Mode Filter Overlay -->
+                        <div id="ir-filter" class="absolute inset-0 pointer-events-none transition-opacity duration-300 opacity-0 bg-indigo-900/20 mix-blend-color"></div>
+                    </div>
+
+                    <div class="mt-6 flex flex-wrap gap-4 justify-between">
+                        <div class="flex gap-3">
+                            <button id="start-btn" class="flex items-center gap-2 px-6 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-medium transition-all shadow-lg shadow-indigo-200 active:scale-95">
+                                <i data-lucide="play" class="w-5 h-5"></i>
+                                Start Monitoring
+                            </button>
+                            <button id="stop-btn" class="hidden flex items-center gap-2 px-6 py-2.5 bg-slate-200 hover:bg-slate-300 text-slate-700 rounded-xl font-medium transition-all active:scale-95">
+                                <i data-lucide="square" class="w-5 h-5"></i>
+                                Stop
+                            </button>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <label class="flex items-center cursor-pointer gap-2">
+                                <span class="text-sm font-medium text-slate-600">Night Vision (IR)</span>
+                                <div class="relative">
+                                    <input type="checkbox" id="ir-toggle" class="sr-only">
+                                    <div class="w-10 h-6 bg-slate-300 rounded-full shadow-inner"></div>
+                                    <div class="dot absolute left-1 top-1 bg-white w-4 h-4 rounded-full transition"></div>
+                                </div>
+                            </label>
+                            <button id="snapshot-btn" class="p-2.5 rounded-xl border border-slate-200 hover:bg-slate-50 transition-colors">
+                                <i data-lucide="camera" class="w-5 h-5 text-slate-600"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Stats/Metrics Cards -->
+                <div class="grid grid-cols-2 sm:grid-cols-5 gap-4">
+                    <div class="card bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                        <p class="text-xs text-slate-500 font-medium mb-1 uppercase tracking-tight">Risk Score</p>
+                        <div class="flex items-end justify-between">
+                            <span id="risk-metric" class="text-2xl font-bold text-emerald-500">0%</span>
+                            <i data-lucide="gauge" class="w-5 h-5 text-indigo-500 mb-1"></i>
+                        </div>
+                    </div>
+                    <div class="card bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                        <p class="text-xs text-slate-500 font-medium mb-1 uppercase tracking-tight">Eye Status</p>
+                        <div class="flex items-end justify-between">
+                            <span id="eye-metric" class="text-2xl font-bold text-slate-900">Open</span>
+                            <i data-lucide="eye" class="w-5 h-5 text-emerald-500 mb-1"></i>
+                        </div>
+                    </div>
+                    <div class="card bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                        <p class="text-xs text-slate-500 font-medium mb-1 uppercase tracking-tight">Head Angle</p>
+                        <div class="flex items-end justify-between">
+                            <span id="head-metric" class="text-2xl font-bold text-slate-900">Center</span>
+                            <i data-lucide="user" class="w-5 h-5 text-indigo-500 mb-1"></i>
+                        </div>
+                    </div>
+                    <div class="card bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                        <p class="text-xs text-slate-500 font-medium mb-1 uppercase tracking-tight">Fatigue Level</p>
+                        <div class="flex items-end justify-between">
+                            <span id="fatigue-metric" class="text-2xl font-bold text-slate-900">Low</span>
+                            <i data-lucide="battery" class="w-5 h-5 text-emerald-500 mb-1"></i>
+                        </div>
+                    </div>
+                    <div class="card bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                        <p class="text-xs text-slate-500 font-medium mb-1 uppercase tracking-tight">Phone Use</p>
+                        <div class="flex items-end justify-between">
+                            <span id="phone-metric" class="text-2xl font-bold text-slate-900">None</span>
+                            <i data-lucide="smartphone" class="w-5 h-5 text-emerald-500 mb-1"></i>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Side Panel: Logs & Analytics -->
+            <div class="space-y-6">
+                <div class="card bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+                    <div class="flex items-center justify-between mb-4">
+                        <h2 class="font-semibold text-lg flex items-center gap-2">
+                            <i data-lucide="image" class="w-5 h-5 text-indigo-600"></i>
+                            Snapshot Gallery
+                        </h2>
+                        <button id="clear-gallery" class="text-[10px] font-bold text-slate-400 hover:text-red-500 uppercase tracking-widest transition-colors">Clear</button>
+                    </div>
+                    <div id="snapshot-gallery" class="grid grid-cols-2 gap-3 max-h-[300px] overflow-y-auto pr-2 custom-scrollbar">
+                        <div class="col-span-2 text-center py-8 text-slate-400 italic text-sm empty-msg">
+                            No snapshots captured...
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card bg-white p-6 rounded-2xl shadow-sm border border-slate-200 h-full">
+                    <div class="flex items-center justify-between mb-6">
+                        <h2 class="font-semibold text-lg flex items-center gap-2">
+                            <i data-lucide="history" class="w-5 h-5 text-indigo-600"></i>
+                            Alert Logs
+                        </h2>
+                        <span id="log-count" class="bg-slate-100 text-slate-600 text-xs font-bold px-2 py-1 rounded-full">0 TOTAL</span>
+                    </div>
+                    
+                    <div id="logs-container" class="space-y-4 max-h-[600px] overflow-y-auto pr-2 custom-scrollbar">
+                        <div class="text-center py-10 text-slate-400 italic text-sm">
+                            Monitoring not started...
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card bg-indigo-900 p-6 rounded-2xl shadow-xl text-white relative overflow-hidden">
+                    <div class="relative z-10">
+                        <h3 class="font-bold mb-2">Hackathon Demo Mode</h3>
+                        <p class="text-indigo-200 text-sm mb-4">Real-time driver state analysis powered by TRAE AI. Simulates automotive safety standards.</p>
+                        <div class="flex items-center gap-4">
+                            <div class="bg-white/10 p-2 rounded-lg backdrop-blur-sm">
+                                <p class="text-xs text-indigo-300">Total Alerts</p>
+                                <p id="total-alerts-stat" class="text-xl font-bold">0</p>
+                            </div>
+                            <div class="bg-white/10 p-2 rounded-lg backdrop-blur-sm">
+                                <p class="text-xs text-indigo-300">Safety Score</p>
+                                <p id="safety-score" class="text-xl font-bold text-emerald-400">100%</p>
+                            </div>
+                        </div>
+                    </div>
+                    <i data-lucide="activity" class="absolute -right-4 -bottom-4 w-32 h-32 text-white/5"></i>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="{{ url_for('static', filename='js/monitoring.js') }}"></script>
+    <script>
+        // Initialize Lucide icons
+        lucide.createIcons();
+
+        // Theme Toggle Logic
+        const themeBtn = document.getElementById('theme-toggle');
+        const body = document.body;
+        themeBtn.addEventListener('click', () => {
+            body.classList.toggle('night-mode');
+            const isNight = body.classList.contains('night-mode');
+            themeBtn.innerHTML = isNight ? `<i data-lucide="sun" class="w-6 h-6"></i>` : `<i data-lucide="moon" class="w-6 h-6"></i>`;
+            lucide.createIcons();
+        });
+
+        // IR Toggle Logic
+        const irToggle = document.getElementById('ir-toggle');
+        const irFilter = document.getElementById('ir-filter');
+        const modeBadge = document.getElementById('mode-badge');
+        irToggle.addEventListener('change', () => {
+            const isIR = irToggle.checked;
+            irFilter.style.opacity = isIR ? '1' : '0';
+            modeBadge.textContent = isIR ? 'Night/IR Mode' : 'Normal Mode';
+            modeBadge.className = isIR ? 'text-xs font-medium bg-purple-100 text-purple-700 px-2 py-1 rounded' : 'text-xs font-medium bg-indigo-100 text-indigo-700 px-2 py-1 rounded';
+            irToggle.nextElementSibling.nextElementSibling.style.transform = isIR ? 'translateX(1rem)' : 'translateX(0)';
+            irToggle.nextElementSibling.style.backgroundColor = isIR ? '#818cf8' : '#cbd5e1';
+        });
+    </script>
+</body>
+</html>
