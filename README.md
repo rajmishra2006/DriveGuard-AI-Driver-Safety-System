@@ -49,4 +49,4 @@ DriveGuard is a real-time AI-powered driver safety monitoring system designed fo
 - **Phone Use**: Uses Pose detection to check for hands near the head.
 
 ---
-Built for Hackathons with ❤️ by Trae AI.
+Built for Hackathons
